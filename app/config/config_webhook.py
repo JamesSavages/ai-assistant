@@ -11,6 +11,9 @@ nylas = Client(
     api_uri=os.environ.get("NYLAS_API_URI", ""),
 )
 
+webhook_url = os.environ.get("SERVER_URL", "") + "/events"
+print("DEBUG - Webhook URL being sent:", repr(webhook_url))
+
 # Define the webhook properties
 request_body = CreateWebhookRequest(
     trigger_types=[WebhookTriggers.MESSAGE_CREATED],
