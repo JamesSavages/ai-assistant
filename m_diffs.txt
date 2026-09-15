@@ -1,0 +1,1121 @@
+﻿diff --git a/app/config/config_auth.py b/app/config/config_auth.py
+index b6202f7..5c25927 100644
+--- a/app/config/config_auth.py
++++ b/app/config/config_auth.py
+@@ -10,7 +10,7 @@ from nylas.models.drafts import EmailName, SendMessageRequest
+ from pydantic import BaseModel
+ 
+ # Load env variables
+-load_dotenv("../../.env", override=True)
++load_dotenv()
+ 
+ # Create FastAPI app
+ app = FastAPI(title="Nylas Email App")
+@@ -88,7 +88,7 @@ async def login(request: Request):
+         return {"grant_id": env_grant_id, "source": "env"}
+     if not request.state.session.get("grant_id"):
+         config = URLForAuthenticationConfig(
+-            client_id=os.environ.get("NYLAS_CLIENT_ID") or "",
++            client_id=os.environ.get("NYLAS_CLIENT_ID", ""),
+             redirect_uri=f"http://localhost:{PORT}/oauth/exchange",
+         )
+         url = nylas.auth.url_for_oauth2(config)
+@@ -116,8 +116,8 @@ async def send_email(
+         body = SendMessageRequest(
+             subject="Your Subject Here",
+             body="Your Email Here",
+-            reply_to=[EmailName(name="Name", email=os.environ.get("EMAIL") or "")],
+-            to=[EmailName(name="Name", email=os.environ.get("EMAIL") or "")],
++            reply_to=[EmailName(name="Name", email=os.environ.get("EMAIL", ""))],
++            to=[EmailName(name="Name", email=os.environ.get("EMAIL", ""))],
+         )
+         message = nylas.messages.send(grant_id, request_body=body).data
+         return message
+diff --git a/app/core/nodes/agent.py b/app/core/nodes/agent.py
+index 8bac0bf..540e253 100644
+--- a/app/core/nodes/agent.py
++++ b/app/core/nodes/agent.py
+@@ -1,34 +1,27 @@
+ import os
+-from abc import abstractmethod, ABC
+-from dataclasses import dataclass, field
++from abc import ABC, abstractmethod
++from dataclasses import dataclass
+ from enum import Enum
+-from typing import Type, Optional, Union, Any, List
++from typing import Any, Optional, Type, Union
+ 
+ import boto3
+ from dotenv import load_dotenv
+-from google.oauth2 import service_account
+ from httpx import AsyncClient
++from openai import AsyncAzureOpenAI
+ from pydantic import BaseModel
+ from pydantic_ai import Agent
+ from pydantic_ai.models import Model
+ from pydantic_ai.models.anthropic import AnthropicModel, AnthropicModelName
+ from pydantic_ai.models.bedrock import BedrockConverseModel, BedrockModelName
+-from pydantic_ai.models.gemini import GeminiModelName
+-from pydantic_ai.models.google import GoogleModel
+-from pydantic_ai.models.openai import (
+-    OpenAIModelName,
+-    OpenAIChatModel,
+-    OpenAIResponsesModel,
+-)
++from pydantic_ai.models.gemini import GeminiModel, GeminiModelName
++from pydantic_ai.models.openai import OpenAIModel, OpenAIModelName
+ from pydantic_ai.providers.anthropic import AnthropicProvider
+-from pydantic_ai.providers.azure import AzureProvider
+ from pydantic_ai.providers.bedrock import BedrockProvider
+-from pydantic_ai.providers.google import GoogleProvider
+-from pydantic_ai.providers.ollama import OllamaProvider
+-from pydantic_ai.settings import ModelSettings
++from pydantic_ai.providers.google_gla import GoogleGLAProvider
++from pydantic_ai.providers.openai import OpenAIProvider
+ 
+-from launchpad.core.nodes.base import Node
+-from launchpad.core.task import TaskContext
++from core.nodes.base import Node
++from core.task import TaskContext
+ 
+ load_dotenv()
+ 
+@@ -37,28 +30,20 @@ class ModelProvider(str, Enum):
+     OPENAI = "openai"
+     AZURE_OPENAI = "azure_openai"
+     ANTHROPIC = "anthropic"
++    GEMINI = "gemini"
+     OLLAMA = "ollama"
+     BEDROCK = "bedrock"
+-    GOOGLE_GEMINI = "google"
+-    GOOGLE_VERTEX_AI = "google_vertex_ai"
+ 
+ 
+ @dataclass
+ class AgentConfig:
++    system_prompt: str
++    output_type: Optional[Type[Any]]
++    deps_type: Optional[Type[Any]]
+     model_provider: ModelProvider
+     model_name: Union[
+         OpenAIModelName, AnthropicModelName, GeminiModelName, BedrockModelName
+     ]
+-    output_type: Any = str
+-    instructions: Optional[str] = None
+-    deps_type: Optional[Type[Any]] = None
+-    name: str | None = None
+-    model_settings: ModelSettings | None = None
+-    retries: int = 1
+-    output_retries: int | None = None
+-    tools: List = field(default_factory=list)
+-    builtin_tools: List = field(default_factory=list)
+-    instrument: bool = True
+ 
+ 
+ class AgentNode(Node, ABC):
+@@ -68,35 +53,23 @@ class AgentNode(Node, ABC):
+     class OutputType(BaseModel):
+         pass
+ 
+-    def __init__(self, task_context: TaskContext = None):
+-        super().__init__(task_context=task_context)
+-
++    def __init__(self):
+         self.__async_client = AsyncClient()
+         agent_wrapper = self.get_agent_config()
+         self.agent = Agent(
++            system_prompt=agent_wrapper.system_prompt,
++            output_type=agent_wrapper.output_type,
+             model=self.__get_model_instance(
+                 agent_wrapper.model_provider, agent_wrapper.model_name
+             ),
+-            output_type=agent_wrapper.output_type,
+-            instructions=agent_wrapper.instructions,
+-            deps_type=agent_wrapper.deps_type,
+-            name=agent_wrapper.name,
+-            model_settings=agent_wrapper.model_settings,
+-            retries=agent_wrapper.retries,
+-            output_retries=agent_wrapper.output_retries,
+-            tools=agent_wrapper.tools,
+-            builtin_tools=agent_wrapper.builtin_tools,
+-            instrument=agent_wrapper.instrument,
+         )
+ 
+-        self.agent.instrument_all()
+-
+     @abstractmethod
+     def get_agent_config(self) -> AgentConfig:
+         pass
+ 
+     @abstractmethod
+-    async def process(self, task_context: TaskContext) -> TaskContext:
++    def process(self, task_context: TaskContext) -> TaskContext:
+         pass
+ 
+     def __get_model_instance(self, provider: ModelProvider, model_name: str) -> Model:
+@@ -107,28 +80,26 @@ class AgentNode(Node, ABC):
+                 return self.__get_azure_openai_model(model_name)
+             case provider.ANTHROPIC.value:
+                 return self.__get_anthropic_model(model_name)
++            case provider.GEMINI.value:
++                return self.__get_gemini_model(model_name)
+             case provider.OLLAMA.value:
+                 return self.__get_ollama_model(model_name)
+             case provider.BEDROCK.value:
+                 return self.__get_bedrock_model(model_name)
+-            case provider.GOOGLE_GEMINI.value:
+-                return self.__get_google_gemini_model(model_name)
+-            case provider.GOOGLE_VERTEX_AI.value:
+-                return self.__get_google_vertex_ai_model(model_name)
+-        return self.__get_openai_model(model_name)
+-
+-    def __get_openai_model(self, model_name) -> Model:
+-        return OpenAIResponsesModel(model_name=model_name)
+-
+-    def __get_azure_openai_model(self, model_name) -> Model:
+-        provider = AzureProvider(
+-            azure_endpoint=os.getenv("AZURE_OPENAI_ENDPOINT"),
+-            api_key=os.getenv("AZURE_OPENAI_API_KEY"),
+-            api_version=os.getenv("AZURE_OPENAI_API_VERSION", "2025-04-01-preview")
++            case _:
++                return self.__get_openai_model("gpt-4.1")
++
++    def __get_openai_model(self, model_name: OpenAIModelName) -> Model:
++        return OpenAIModel(
++            model_name,
++            provider=OpenAIProvider(http_client=self.__async_client),
+         )
+-        return OpenAIResponsesModel(
+-            model_name=model_name,
+-            provider=provider,
++
++    def __get_azure_openai_model(self, model_name: OpenAIModelName) -> Model:
++        client = AsyncAzureOpenAI()
++        return OpenAIModel(
++            model_name,
++            provider=OpenAIProvider(openai_client=client),
+         )
+ 
+     def __get_anthropic_model(self, model_name: AnthropicModelName) -> Model:
+@@ -137,13 +108,19 @@ class AgentNode(Node, ABC):
+             provider=AnthropicProvider(http_client=self.__async_client),
+         )
+ 
++    def __get_gemini_model(self, model_name: str) -> Model:
++        return GeminiModel(
++            model_name=model_name,
++            provider=GoogleGLAProvider(http_client=self.__async_client),
++        )
++
+     def __get_ollama_model(self, model_name: str) -> Model:
+         base_url = os.getenv("OLLAMA_BASE_URL")
+         if not base_url:
+             raise KeyError("OLLAMA_BASE_URL not set in .env")
+ 
+-        return OpenAIChatModel(
+-            model_name=model_name, provider=OllamaProvider(base_url=base_url)
++        return OpenAIModel(
++            model_name=model_name, provider=OpenAIProvider(base_url=base_url)
+         )
+ 
+     def __get_bedrock_model(self, model_name: str) -> Model:
+@@ -161,23 +138,3 @@ class AgentNode(Node, ABC):
+             model_name=model_name,
+             provider=BedrockProvider(bedrock_client=bedrock_client),
+         )
+-
+-    def __get_google_gemini_model(self, model_name: str) -> Model:
+-        return GoogleModel(
+-            model_name=model_name,
+-            provider=GoogleProvider(),
+-        )
+-
+-    def __get_google_vertex_ai_model(self, model_name: str) -> Model:
+-        credentials = service_account.Credentials.from_service_account_file(
+-            filename=os.getenv("GOOGLE_APPLICATION_CREDENTIALS", ""),
+-            scopes=["https://www.googleapis.com/auth/cloud-platform"],
+-        )
+-        provider = GoogleProvider(
+-            credentials=credentials,
+-            location=os.getenv("GOOGLE_VERTEX_AI_LOCATION", "europe-west1"),
+-        )
+-        return GoogleModel(
+-            model_name=model_name,
+-            provider=provider,
+-        )
+diff --git a/app/core/nodes/base.py b/app/core/nodes/base.py
+index 218939f..00ee1fa 100644
+--- a/app/core/nodes/base.py
++++ b/app/core/nodes/base.py
+@@ -1,9 +1,6 @@
+ from abc import ABC, abstractmethod
+-from typing import Type, Optional
+ 
+-from pydantic import BaseModel
+-
+-from launchpad.core.task import TaskContext
++from core.task import TaskContext
+ 
+ """
+ Base Node Module
+@@ -15,48 +12,21 @@ sequentially and pass results to the next node in the chain.
+ 
+ 
+ class Node(ABC):
+-    class OutputType(BaseModel):
+-        """
+-        OutputType class for representing structured outputs for Nodes.
+-        """
++    """Abstract base class for all workflow processing nodes.
+ 
+-        pass
++    Node implements the Chain of Responsibility pattern, serving as the base
++    handler for all workflow processing steps. Each concrete node implementation
++    represents a specific processing step in the workflow chain.
+ 
+-    def __init__(self, task_context: TaskContext = None):
+-        """
+-        The constructor is used to initialize the class with a provided TaskContext
+-        instance or without any context.
++    The Chain of Responsibility pattern is implemented through the process()
++    method, which each node uses to:
++    1. Receive the task context from the previous node
++    2. Perform its specific processing
++    3. Pass the updated context to the next node
+ 
+-        Parameters:
+-        task_context (TaskContext, optional): Context associated with the task.
+-            Defaults to None.
+-        """
+-        self.task_context = task_context
+-
+-    def save_output(self, output: BaseModel):
+-        """
+-        Saves the output of a task node into the task context, associating it with the
+-        node's name for future reference.
+-
+-        Args:
+-            output (BaseModel): The model instance representing the result of the task
+-            to be stored in the task_context.
+-        """
+-        self.task_context.nodes[self.node_name] = output
+-
+-    def get_output(self, node_class: Type["Node"]) -> Optional[OutputType]:
+-        """
+-        Retrieves the output associated with a specific node class from the task context.
+-
+-        Parameters:
+-        node_class: Type[Node]
+-            The class of the node whose output is to be retrieved.
+-
+-        Returns:
+-        Optional[OutputType]
+-            The output associated with the specified node class if it exists, otherwise None.
+-        """
+-        return self.task_context.nodes.get(node_class.__name__, None)
++    Attributes:
++        node_name: Auto-generated name based on the class name
++    """
+ 
+     @property
+     def node_name(self) -> str:
+@@ -68,7 +38,7 @@ class Node(ABC):
+         return self.__class__.__name__
+ 
+     @abstractmethod
+-    async def process(self, task_context: TaskContext) -> TaskContext:
++    def process(self, task_context: TaskContext) -> TaskContext:
+         """Processes the task context in the responsibility chain.
+ 
+         This method implements the Chain of Responsibility pattern's handle
+@@ -84,17 +54,6 @@ class Node(ABC):
+         Note:
+             Implementations should:
+             1. Process the task according to their specific responsibility
+-            2. Store results using the save_output method
+-        """
+-        pass
+-
+-    async def cleanup(self) -> None:
+-        """Releases any per-instance resources held by the node.
+-
+-        Called after the node finishes processing, including when an
+-        exception propagates out. Override this when the node holds
+-        clients or connections that need explicit teardown between runs
+-        (for example, when the same node type is re-entered by a child
+-        workflow during composition).
++            2. Store results in task_context.nodes[self.node_name]
+         """
+         pass
+diff --git a/app/core/nodes/router.py b/app/core/nodes/router.py
+index 4cd85f6..3768856 100644
+--- a/app/core/nodes/router.py
++++ b/app/core/nodes/router.py
+@@ -1,10 +1,8 @@
+ from abc import ABC, abstractmethod
+-from typing import Optional, Type
++from typing import Optional
+ 
+-from pydantic import BaseModel
+-
+-from launchpad.core.task import TaskContext
+-from launchpad.core.nodes.base import Node
++from core.task import TaskContext
++from core.nodes.base import Node
+ 
+ """
+ Router Module
+@@ -27,14 +25,23 @@ class BaseRouter(Node):
+         fallback: Optional default node to route to if no rules match
+     """
+ 
+-    async def process(self, task_context: TaskContext) -> TaskContext:
+-        pass
++    def process(self, task_context: TaskContext) -> TaskContext:
++        """Processes the routing logic and updates task context.
++
++        Args:
++            task_context: Current task execution context
++
++        Returns:
++            Updated TaskContext
++        """
++        return task_context
+ 
+     def route(self, task_context: TaskContext) -> Node:
+         """Determines the next node based on routing rules.
+ 
+         Evaluates each routing rule in sequence and returns the first
+         matching node. Falls back to the default node if no rules match.
++        Also stores the routing decision in the task context.
+ 
+         Args:
+             task_context: Current task execution context
+@@ -43,17 +50,19 @@ class BaseRouter(Node):
+             The next node to execute, or None if no route is found
+         """
+         for route_node in self.routes:
+-            route_node.task_context = task_context
+             next_node = route_node.determine_next_node(task_context)
+             if next_node:
++                task_context.nodes[self.node_name] = {"next_node": next_node.node_name}
+                 return next_node
++
++        # Handle fallback case
++        task_context.nodes[self.node_name] = {
++            "next_node": self.fallback.node_name if self.fallback else None
++        }
+         return self.fallback if self.fallback else None
+ 
+ 
+ class RouterNode(ABC):
+-    def __init__(self, task_context: TaskContext = None):
+-        self.task_context = task_context
+-
+     @abstractmethod
+     def determine_next_node(self, task_context: TaskContext) -> Optional[Node]:
+         pass
+@@ -61,9 +70,3 @@ class RouterNode(ABC):
+     @property
+     def node_name(self):
+         return self.__class__.__name__
+-
+-    def save_output(self, output: BaseModel):
+-        self.task_context.nodes[self.node_name] = output
+-
+-    def get_output(self, node_class: Type[Node]):
+-        return self.task_context.nodes.get(node_class.__name__, None)
+diff --git a/app/core/schema.py b/app/core/schema.py
+index 3ee2092..1cb60e4 100644
+--- a/app/core/schema.py
++++ b/app/core/schema.py
+@@ -2,7 +2,7 @@ from typing import List, Type, Optional
+ 
+ from pydantic import BaseModel, Field
+ 
+-from launchpad.core.nodes.base import Node
++from core.nodes.base import Node
+ 
+ """
+ Workflow Schema Module
+@@ -24,7 +24,7 @@ class NodeConfig(BaseModel):
+         connections: List of Node classes this node can connect to
+         is_router: Flag indicating if this node performs routing logic
+         description: Optional description of the node's purpose
+-        concurrent_nodes: Optional list of Node classes that can run concurrently
++        parallel_nodes: Optional list of Node classes that can run in parallel
+ 
+     Example:
+         config = NodeConfig(
+@@ -32,7 +32,7 @@ class NodeConfig(BaseModel):
+             connections=[RouterNode],
+             is_router=False,
+             description="Analyzes incoming requests"
+-            concurrent_nodes=[FilterContentGuardrailNode, FilterSQLInjectionGuardrailNode]
++            parallel_nodes=[FilterContentGuardrailNode, FilterSQLInjectionGuardrailNode]
+         )
+     """
+ 
+@@ -40,7 +40,7 @@ class NodeConfig(BaseModel):
+     connections: List[Type[Node]] = Field(default_factory=list)
+     is_router: bool = False
+     description: Optional[str] = None
+-    concurrent_nodes: Optional[List[Type[Node]]] = Field(default_factory=list)
++    parallel_nodes: Optional[List[Type[Node]]] = Field(default_factory=list)
+ 
+ 
+ class WorkflowSchema(BaseModel):
+diff --git a/app/core/task.py b/app/core/task.py
+index 4d3e36f..cb17716 100644
+--- a/app/core/task.py
++++ b/app/core/task.py
+@@ -1,8 +1,10 @@
+-from typing import Any, Dict
++from typing import Any, Dict, Optional
++
+ from pydantic import BaseModel, Field
+ 
+ """
+ Task Context Module
++
+ This module defines the context object that gets passed between workflow nodes.
+ It maintains the state and metadata throughout workflow execution.
+ """
+@@ -10,14 +12,16 @@ It maintains the state and metadata throughout workflow execution.
+ 
+ class TaskContext(BaseModel):
+     """Context container for workflow task execution.
++
+     TaskContext maintains the state and results of a workflow's execution,
+     tracking the original event, intermediate node results, and additional
+     metadata throughout the processing flow.
++
+     Attributes:
+         event: The original event that triggered the workflow
+         nodes: Dictionary storing results and state from each node's execution
+         metadata: Dictionary storing workflow-level metadata and configuration
+-        should_stop: Boolean flag indicating whether the workflow should stop execution
++
+     Example:
+         context = TaskContext(
+             event=incoming_event,
+@@ -35,22 +39,13 @@ class TaskContext(BaseModel):
+         default_factory=dict,
+         description="Stores workflow-level metadata and configuration",
+     )
+-    should_stop: bool = Field(
+-        default=False,
+-        description="Flag indicating whether the workflow should stop execution",
+-    )
+-    trace_id: str | None = Field(
+-        default=None,
+-        description="Langfuse trace ID for this workflow run, captured on entry when tracing is enabled",
+-    )
++    should_stop: bool = Field(default=False)
++    stop_reason: Optional[str] = None
+ 
+     def update_node(self, node_name: str, **kwargs):
+         self.nodes[node_name] = {**self.nodes.get(node_name, {}), **kwargs}
+ 
+-    def stop_workflow(self) -> None:
+-        """Stops the current workflow execution by setting the stop flag.
+-
+-        This method can be called from any node to halt the workflow processing.
+-        Once called, the workflow will stop after the current node completes.
+-        """
++    def stop_workflow(self, reason: Optional[str] = None) -> None:
++        """Marks the workflow for early stopping."""
+         self.should_stop = True
++        self.stop_reason = reason
+diff --git a/app/core/validate.py b/app/core/validate.py
+index 0e43f5d..f3a1f44 100644
+--- a/app/core/validate.py
++++ b/app/core/validate.py
+@@ -1,8 +1,8 @@
+ from collections import deque
+ from typing import Set, Type
+ 
+-from launchpad.core.nodes.base import Node
+-from launchpad.core.schema import WorkflowSchema
++from core.nodes.base import Node
++from core.schema import WorkflowSchema
+ 
+ """
+ Workflow Validator Module
+diff --git a/app/core/workflow.py b/app/core/workflow.py
+index e3df5ed..444a2ea 100644
+--- a/app/core/workflow.py
++++ b/app/core/workflow.py
+@@ -1,3 +1,15 @@
++import logging
++from abc import ABC
++from contextlib import contextmanager
++from dotenv import load_dotenv
++from typing import Dict, Optional, ClassVar, Type, Any
++
++from core.nodes.base import Node
++from core.nodes.router import BaseRouter
++from core.schema import WorkflowSchema, NodeConfig
++from core.task import TaskContext
++from core.validate import WorkflowValidator
++
+ """
+ Workflow Orchestration Module
+ 
+@@ -6,33 +18,6 @@ It provides a flexible framework for defining and executing workflows with multi
+ nodes and routing logic.
+ """
+ 
+-import asyncio
+-import logging
+-from abc import ABC
+-from contextlib import contextmanager, nullcontext
+-from typing import Dict, Optional, ClassVar, Type, Any, AsyncIterator
+-
+-from dotenv import load_dotenv
+-from langfuse import get_client
+-
+-from launchpad.core.exceptions import LangfuseAuthenticationError
+-from launchpad.core.nodes.agent_streaming_node import AgentStreamingNode
+-from launchpad.core.nodes.base import Node
+-from launchpad.core.nodes.router import BaseRouter
+-from launchpad.core.schema import WorkflowSchema, NodeConfig
+-from launchpad.core.task import TaskContext
+-from launchpad.core.validate import WorkflowValidator
+-
+-load_dotenv()
+-
+-
+-class NoOpSpan:
+-    """No-op span that ignores all update calls."""
+-
+-    def update(self, **kwargs):
+-        """Accepts and ignores all keyword arguments for compatibility with real spans."""
+-        pass
+-
+ 
+ class Workflow(ABC):
+     """Abstract base class for defining processing workflows.
+@@ -59,41 +44,12 @@ class Workflow(ABC):
+ 
+     workflow_schema: ClassVar[WorkflowSchema]
+ 
+-    def __init__(self, enable_tracing: bool = False):
+-        """Initializes the workflow by validating schema and creating nodes.
+-
+-        Args:
+-            enable_tracing: Whether to enable Langfuse tracing. Defaults to False.
+-        """
++    def __init__(self):
++        """Initializes the workflow by validating schema and creating nodes."""
+         self.validator = WorkflowValidator(self.workflow_schema)
+         self.validator.validate()
+         self.nodes: Dict[Type[Node], NodeConfig] = self._initialize_nodes()
+-        self.enable_tracing = enable_tracing
+-
+-        if enable_tracing:
+-            langfuse = get_client()
+-            if langfuse.auth_check():
+-                self.langfuse = langfuse
+-            else:
+-                raise LangfuseAuthenticationError(
+-                    "Failed to authenticate with Langfuse. Check your LANGFUSE_PUBLIC_KEY and LANGFUSE_SECRET_KEY."
+-                )
+-        else:
+-            self.langfuse = None
+-
+-    def _observation_context(self, name: str):
+-        """Returns a tracing context manager or no-op based on enable_tracing.
+-
+-        Args:
+-            name: The name for the tracing span.
+-
+-        Returns:
+-            A context manager that yields a Langfuse span if tracing is enabled,
+-            or a NoOpSpan otherwise.
+-        """
+-        if self.enable_tracing and self.langfuse:
+-            return self.langfuse.start_as_current_observation(as_type="span", name=name)
+-        return nullcontext(NoOpSpan())
++        load_dotenv()
+ 
+     @contextmanager
+     def node_context(self, node_name: str):
+@@ -132,227 +88,50 @@ class Workflow(ABC):
+                     nodes[connected_node] = connected_node_config
+         return nodes
+ 
+-
+-    def run(
+-        self, event: Any = None, *, context: TaskContext = None
+-    ) -> TaskContext:
+-        """Executes the workflow for a given event or existing context synchronously.
+-
+-        Use this when you want to run the workflow in a new event loop,
+-        for example in a Celery background task or a plain Python script.
++    @staticmethod
++    def _instantiate_node(node_class: Type[Node]) -> Node:
++        """Creates an instance of a node class.
+ 
+         Args:
+-            event: Raw event data to process. Required if context is not provided.
+-            context: Existing TaskContext to continue with. When provided, event
+-                parsing is skipped and the workflow reuses the shared context.
+-                Used for workflow composition where a parent workflow hands its
+-                context to a child workflow.
++            node_class: The class of the node to instantiate
+ 
+         Returns:
+-            TaskContext containing the results of workflow execution.
++            An instance of the specified node class
+         """
+-        if context is None and event is None:
+-            raise ValueError("Either event or context must be provided")
+-        return asyncio.run(self.__run(event, context))
+-
+-    async def run_async(
+-        self, event: Any = None, *, context: TaskContext = None
+-    ) -> TaskContext:
+-        """Executes the workflow for a given event or existing context asynchronously.
++        return node_class()
+ 
+-        Use this when you want to run the workflow in an active event loop,
+-        for example in a FastAPI endpoint or from within a node that delegates
+-        to a child workflow.
++    def run(self, event: Any) -> TaskContext:
++        """Executes the workflow for a given event.
+ 
+         Args:
+-            event: Raw event data to process. Required if context is not provided.
+-            context: Existing TaskContext to continue with. When provided, event
+-                parsing is skipped and the workflow reuses the shared context.
++            event: The event to process through the workflow
+ 
+         Returns:
+-            TaskContext containing the results of workflow execution.
+-        """
+-        if context is None and event is None:
+-            raise ValueError("Either event or context must be provided")
+-        return await self.__run(event, context)
+-
+-    async def run_stream_async(self, event: Any) -> AsyncIterator[Dict[str, Any]]:
+-        """Executes the workflow with streaming support, yielding events as they occur.
+-
+-        Args:
+-            event: The event data to process through the workflow.
+-
+-        Yields:
+-            Dict containing streaming events with type and data fields.
+-            Error events have type "error" with an "error" field.
++            TaskContext containing the results of workflow execution
+ 
+         Raises:
+-            Exception: Re-raises any exception that occurs during workflow execution.
++            Exception: Any exception that occurs during workflow execution
+         """
+         task_context = TaskContext(event=event)
+ 
+-        with self._observation_context(self.__class__.__name__) as workflow_span:
+-            try:
+-                logging.info("Starting workflow streaming execution")
+-
+-                # Parse the raw event to the Pydantic schema defined in the WorkflowSchema
+-                task_context.event = self.workflow_schema.event_schema(**event)
+-                workflow_span.update(input=event)
+-                logging.info(
+-                    f"Parsed event with schema: {self.workflow_schema.event_schema.__name__}"
+-                )
+-
+-                task_context.metadata["nodes"] = self.nodes
+-                current_node_class = self.workflow_schema.start
+-                logging.info(f"Starting with node: {current_node_class.__name__}")
+-
+-                while current_node_class:
+-                    if task_context.should_stop:
+-                        logging.info("Stopping workflow execution")
+-                        break
+-
+-                    current_node = self.nodes[current_node_class].node
+-                    node_name = current_node_class.__name__
+-
+-                    with self._observation_context(node_name) as node_span:
+-                        node_span.update(
+-                            input=task_context.model_dump(
+-                                exclude={"metadata": {"nodes"}}
+-                            )
+-                        )
+-
+-                        with self.node_context(node_name):
+-                            if not issubclass(current_node, BaseRouter):
+-                                node_instance = current_node(task_context=task_context)
+-                                logging.info(f"Node instance created: {node_name}")
+-
+-                                if isinstance(node_instance, AgentStreamingNode):
+-                                    async for stream_event in node_instance.process(
+-                                        task_context
+-                                    ):
+-                                        yield stream_event
+-                                else:
+-                                    task_context = await node_instance.process(
+-                                        task_context
+-                                    )
+-
+-                            node_span.update(
+-                                output=task_context.model_dump(
+-                                    include={"nodes": {node_name}}
+-                                )
+-                            )
+-
+-                    current_node_class = await self._get_next_node_class(
+-                        current_node_class, task_context
+-                    )
+-
+-                workflow_span.update(
+-                    output=task_context.model_dump(exclude={"metadata": {"nodes"}})
+-                )
+-                task_context.metadata.pop("nodes", None)
+-
+-            except Exception as e:
+-                logging.error(f"Error in workflow execution: {str(e)}", exc_info=True)
+-                workflow_span.update(level="ERROR", status_message=str(e))
+-                yield {"type": "error", "error": str(e)}
+-                raise
+-
+-    async def __run(
+-        self, event: Any = None, existing_context: TaskContext = None
+-    ) -> TaskContext:
+-        """Executes the workflow for a given event or existing context.
++        # Parse the raw event to the Pydantic schema defined in the WorkflowSchema
++        task_context.event = self.workflow_schema.event_schema(**event)
+ 
+-        Args:
+-            event: The event to process. Ignored if existing_context is provided.
+-            existing_context: Existing TaskContext to continue with. When present,
+-                the workflow skips event parsing, resets should_stop, and preserves
+-                the parent's node registry for restoration on return.
++        task_context.metadata["nodes"] = self.nodes
++        current_node_class = self.workflow_schema.start
+ 
+-        Returns:
+-            TaskContext containing the results of workflow execution
++        while current_node_class:
++            current_node = self.nodes[current_node_class].node
++            with self.node_context(current_node_class.__name__):
++                task_context = current_node().process(task_context)
+ 
+-        Raises:
+-            Exception: Any exception that occurs during workflow execution
+-        """
+-        with self._observation_context(self.__class__.__name__) as workflow_span:
+-            try:
+-                if existing_context is not None:
+-                    task_context = existing_context
+-                    task_context.should_stop = False
+-                    workflow_span.update(
+-                        input=task_context.model_dump(exclude={"metadata": {"nodes"}})
+-                    )
+-                else:
+-                    task_context = TaskContext(event=event)
+-                    # Parse the raw event to the Pydantic schema defined in the WorkflowSchema
+-                    task_context.event = self.workflow_schema.event_schema(**event)
+-                    workflow_span.update(input=event)
+-
+-                if self.enable_tracing and self.langfuse:
+-                    task_context.trace_id = self.langfuse.get_current_trace_id()
+-
+-                # Save parent's nodes registry so nested workflows don't clobber it
+-                parent_nodes = task_context.metadata.get("nodes")
+-                task_context.metadata["nodes"] = self.nodes
+-
+-                current_node_class = self.workflow_schema.start
+-
+-                while current_node_class:
+-                    if task_context.should_stop:
+-                        logging.info("Stopping workflow execution")
+-                        break
+-
+-                    current_node = self.nodes[current_node_class].node
+-                    node_name = current_node_class.__name__
+-                    node_instance = None
+-
+-                    try:
+-                        with self._observation_context(node_name) as node_span:
+-                            node_span.update(
+-                                input=task_context.model_dump(
+-                                    exclude={"metadata": {"nodes"}}
+-                                )
+-                            )
+-
+-                            with self.node_context(node_name):
+-                                if not issubclass(current_node, BaseRouter):
+-                                    node_instance = current_node(
+-                                        task_context=task_context
+-                                    )
+-                                    task_context = await node_instance.process(
+-                                        task_context
+-                                    )
+-
+-                            node_span.update(
+-                                output=task_context.model_dump(
+-                                    include={"nodes": {node_name}}
+-                                )
+-                            )
+-                    finally:
+-                        if node_instance is not None:
+-                            await node_instance.cleanup()
+-
+-                    current_node_class = await self._get_next_node_class(
+-                        current_node_class, task_context
+-                    )
+-
+-                workflow_span.update(
+-                    output=task_context.model_dump(exclude={"metadata": {"nodes"}})
+-                )
+-
+-                if parent_nodes is not None:
+-                    task_context.metadata["nodes"] = parent_nodes
+-                else:
+-                    task_context.metadata.pop("nodes", None)
+-
+-                return task_context
+-
+-            except Exception as e:
+-                logging.error(f"Error in workflow execution: {str(e)}", exc_info=True)
+-                workflow_span.update(level="ERROR", status_message=str(e))
+-                raise
+-
+-    async def _get_next_node_class(
++            current_node_class = self._get_next_node_class(
++                current_node_class, task_context
++            )
++        task_context.metadata.pop("nodes")
++        return task_context
++
++    def _get_next_node_class(
+         self, current_node_class: Type[Node], task_context: TaskContext
+     ) -> Optional[Type[Node]]:
+         """Determines the next node to execute in the workflow.
+@@ -364,6 +143,10 @@ class Workflow(ABC):
+         Returns:
+             The class of the next node to execute, or None if at the end
+         """
++
++        if task_context.should_stop:
++            return None
++
+         node_config = next(
+             (nc for nc in self.workflow_schema.nodes if nc.node == current_node_class),
+             None,
+@@ -373,12 +156,12 @@ class Workflow(ABC):
+             return None
+ 
+         if node_config.is_router:
+-            router: BaseRouter = self.nodes[current_node_class].node()
+-            return await self._handle_router(router, task_context)
++            router: BaseRouter = self.nodes[current_node_class].node()  # type: ignore
++            return self._handle_router(router, task_context)
+ 
+         return node_config.connections[0]
+ 
+-    async def _handle_router(
++    def _handle_router(
+         self, router: BaseRouter, task_context: TaskContext
+     ) -> Optional[Type[Node]]:
+         """Handles routing logic for router nodes.
+diff --git a/app/main.py b/app/main.py
+index ef74ee6..c18c7f0 100644
+--- a/app/main.py
++++ b/app/main.py
+@@ -13,7 +13,7 @@ from dotenv import load_dotenv
+ from schemas.nylas_email_schema import EmailObject
+ from schemas.nylas_webhook_schema import WebhookEvent
+ 
+-load_dotenv("../.env", override=True)
++load_dotenv(override=True)
+ 
+ # Array to hold webhook dataclass
+ webhooks = []
+@@ -57,6 +57,8 @@ async def webhook(
+     else:
+         return PlainTextResponse("No event data", status_code=400)
+ 
++    email_obj = EmailObject(**event.data["object"])
++
+     webhooks.append(email_obj)
+     return PlainTextResponse("Webhook received", status_code=200)
+ 
+diff --git a/app/schemas/nylas_email_schema.py b/app/schemas/nylas_email_schema.py
+index c0d5909..a6910ff 100644
+--- a/app/schemas/nylas_email_schema.py
++++ b/app/schemas/nylas_email_schema.py
+@@ -1,19 +1,35 @@
+ from pydantic import BaseModel, Field
+-from typing import Optional
++
++
++class Sender(BaseModel):
++    email: str
++    name: str
++
++
++class Attachment(BaseModel):
++    content_disposition: str | None = None
++    content_id: str | None = None
++    content_type: str
++    filename: str
++    grant_id: str
++    id: str
++    is_inline: bool = False
++    size: int
++
+ 
+ class EmailObject(BaseModel):
+-    attachments: list = []
++    attachments: list[Attachment] = []
+     bcc: list = []
+     body: str
+     cc: list = []
+     date: int
+     folders: list = []
+-    from_: list = Field(..., alias="from")
++    from_: list[Sender] = Field(..., alias="from")
+     grant_id: str
+     id: str
+     object: str
+     reply_to: list = []
+-    snippet: Optional[str] = None
++    snippet: str
+     starred: bool
+     subject: str
+     thread_id: str
+diff --git a/app/services/nylas_service.py b/app/services/nylas_service.py
+index c0b2d15..346726d 100644
+--- a/app/services/nylas_service.py
++++ b/app/services/nylas_service.py
+@@ -1,7 +1,8 @@
++import logging
+ import os
+-import json
+-from pathlib import Path
++
+ from nylas import Client
++from schemas.nylas_email_schema import Attachment, EmailObject
+ 
+ 
+ class NylasService:
+@@ -11,36 +12,90 @@ class NylasService:
+             api_uri=os.environ.get("NYLAS_API_URI", ""),
+         )
+ 
+-    def load_webhook_data(self, uuid):
+-        """Load webhook data from a JSON file in the events directory."""
+-        base_dir = Path(__file__).resolve().parent.parent.parent
+-        events_dir = base_dir / "requests" / "events"
+-        file_path = events_dir / f"{uuid}.json"
+-
+-        if not file_path.exists():
+-            raise FileNotFoundError(f"No webhook data found for UUID: {uuid}")
+-
+-        with open(file_path, "r") as f:
+-            return json.load(f)
+-
+-    def download_attachment(self, attachment_id, grant_id, message_id):
++    def download_attachment(self, email: EmailObject, download: bool = False):
+         """Download an attachment from Nylas."""
+-        # Get the attachment using the grant_id and message_id
+-        attachment = self.client.attachments.find(
+-            identifier=grant_id,
+-            attachment_id=attachment_id,
+-            query_params={"message_id": message_id},
+-        )
++        attachment: Attachment = email.attachments[0]
+ 
+-        # Download the file content
+         file_content = self.client.attachments.download_bytes(
+-            identifier=grant_id,
+-            attachment_id=attachment_id,
+-            query_params={"message_id": message_id},
++            identifier=attachment.grant_id,
++            attachment_id=attachment.id,
++            query_params={"message_id": email.id},
+         )
+ 
++        if download:
++            downloads_dir = "./"
++            file_path = os.path.join(downloads_dir, attachment.filename)
++            with open(file_path, "wb") as f:
++                f.write(file_content)
++            print(f"Attachment saved to {file_path}")
++
+         return {
+             "content": file_content,
+-            "content_type": attachment.data.content_type,
+-            "filename": attachment.data.filename,
++            "content_type": attachment.content_type,
++            "filename": attachment.filename,
+         }
++
++    def send_email(
++        self,
++        grant_id: str,
++        to: list[str],
++        subject: str,
++        body: str,
++        from_email: list[str] | None = None,
++        cc: list[str] | None = None,
++        bcc: list[str] | None = None,
++        reply_to: list[str] | None = None,
++        reply: bool = False,
++        reply_to_message_id: str | None = None,
++    ):
++        """
++        Send an email or reply to an email using the Nylas API via draft creation and sending.
++        If reply=True, thread_id must be provided.
++        """
++        request_body = {
++            "to": [{"email": email_address} for email_address in to],
++            "subject": subject,
++            "body": body,
++        }
++        if from_email:
++            request_body["from"] = [
++                {"email": email_address} for email_address in from_email
++            ]
++        if cc:
++            request_body["cc"] = [{"email": email_address} for email_address in cc]
++        if bcc:
++            request_body["bcc"] = [{"email": email_address} for email_address in bcc]
++        if reply_to:
++            request_body["reply_to"] = [
++                {"email": email_address} for email_address in reply_to
++            ]
++        if reply:
++            if not reply_to_message_id:
++                raise ValueError("thread_id must be provided when sending a reply.")
++            request_body["reply_to_message_id"] = reply_to_message_id
++
++        # Create the draft
++        draft = self.client.drafts.create(grant_id, request_body=request_body)  # type: ignore
++        # Send the draft
++        sent_draft = self.client.drafts.send(grant_id, draft[0].id)
++        return sent_draft
++
++    def delete_email(self, email: EmailObject):
++        """Delete an email using the Nylas API."""
++        logging.info(f"Deleting email: {email.id}")
++        response = self.client.messages.destroy(
++            identifier=email.grant_id, message_id=email.id
++        )
++        return response
++
++    def add_email_to_folder(self, grant_id: str, message_id: str, folder_id: str):
++        """Add an email to a specified folder using the Nylas API."""
++        request_body = {"folder_id": folder_id}
++
++        # The identifier for updating messages is the grant_id
++        updated_message, request_id = self.client.messages.update(
++            identifier=grant_id,
++            message_id=message_id,
++            request_body=request_body,  # type: ignore
++        )
++        return updated_message, request_id

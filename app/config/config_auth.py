@@ -10,7 +10,7 @@ from nylas.models.drafts import EmailName, SendMessageRequest
 from pydantic import BaseModel
 
 # Load env variables
-load_dotenv("../../.env", override=True)
+load_dotenv()
 
 # Create FastAPI app
 app = FastAPI(title="Nylas Email App")
@@ -88,7 +88,7 @@ async def login(request: Request):
         return {"grant_id": env_grant_id, "source": "env"}
     if not request.state.session.get("grant_id"):
         config = URLForAuthenticationConfig(
-            client_id=os.environ.get("NYLAS_CLIENT_ID") or "",
+            client_id=os.environ.get("NYLAS_CLIENT_ID", ""),
             redirect_uri=f"http://localhost:{PORT}/oauth/exchange",
         )
         url = nylas.auth.url_for_oauth2(config)
@@ -116,8 +116,8 @@ async def send_email(
         body = SendMessageRequest(
             subject="Your Subject Here",
             body="Your Email Here",
-            reply_to=[EmailName(name="Name", email=os.environ.get("EMAIL") or "")],
-            to=[EmailName(name="Name", email=os.environ.get("EMAIL") or "")],
+            reply_to=[EmailName(name="Name", email=os.environ.get("EMAIL", ""))],
+            to=[EmailName(name="Name", email=os.environ.get("EMAIL", ""))],
         )
         message = nylas.messages.send(grant_id, request_body=body).data
         return message

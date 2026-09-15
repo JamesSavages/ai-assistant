@@ -80,3 +80,23 @@ flowchart LR
     RawEvents -.-> PostgreSQL
     ProcessedResults -.-> PostgreSQL
 ```
+
+
+## Slack Interaction Layer
+
+```mermaid
+---
+config:
+  look: neo
+  theme: neutral
+  layout: dagre
+---
+flowchart LR
+    User(("User")) -- Instructions --> Slack["Slack"]
+    Slack -- Forward commands --> Backend["FastAPI Backend"]
+    Backend -- Process --> Workflows["AI Workflows"]
+    Workflows -- Execute actions --> Nylas["Nylas API"]
+    Nylas -- Email & Calendar Events --> Backend
+    Workflows -- Important updates --> Slack
+    Slack -- Notifications --> User
+```

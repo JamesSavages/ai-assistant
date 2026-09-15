@@ -13,7 +13,7 @@ from dotenv import load_dotenv
 from schemas.nylas_email_schema import EmailObject
 from schemas.nylas_webhook_schema import WebhookEvent
 
-load_dotenv("../.env", override=True)
+load_dotenv(override=True)
 
 # Array to hold webhook dataclass
 webhooks = []
@@ -56,6 +56,8 @@ async def webhook(
         email_obj = EmailObject(**event.data["object"])
     else:
         return PlainTextResponse("No event data", status_code=400)
+
+    email_obj = EmailObject(**event.data["object"])
 
     webhooks.append(email_obj)
     return PlainTextResponse("Webhook received", status_code=200)

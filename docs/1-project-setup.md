@@ -4,7 +4,7 @@
 
 1. Introduction to the project
 2. Understanding the project architecture
-3. Setting up and configuring Nylas
+3. Seting up and configuring Nylas
 4. Setting up your webhook server
 5. Receiving your first webhook
 6. Understanding the webhook data model
@@ -15,47 +15,6 @@
 - [FastAPI](https://fastapi.tiangolo.com/)
 - [Pinggy](https://pinggy.io/)
 - [Nylas](https://developer.nylas.com/docs/v3/getting-started/)
-
-
-## What We Are Doing in This Video
-
-We are wiring your local FastAPI app to Nylas so your app can react to real email events in real time. Nylas will send an HTTP POST to your `/events` endpoint whenever something happens. Your machine is not public, so we use a tunnel to give Nylas a public URL that forwards requests to `localhost`.
-
-This is not a toy demo. We are doing what real AI engineers do to get live data into an app. Some steps will feel tricky, especially in week 1. That is normal. Once webhooks are flowing, building the logic is much easier. You will use my starter code with FastAPI and Pydantic. We will go deep on those tools later. For now the goal is to complete the setup and see events arrive.
-
-### Why We Need a Tunnel
-
-Your laptop runs the server on `localhost`. Nylas lives on the internet and cannot reach `localhost` directly. A tunnel gives you a temporary public URL that forwards traffic to your local port. Examples are Pinggy and Cloudflare Tunnels. Pinggy URLs often expire. Cloudflare can be persistent. Either is fine for development.
-
-### High Level Architecture
-
-```mermaid
-sequenceDiagram
-  participant Sender as Sender
-  participant Nylas as Nylas
-  participant Tunnel as Tunnel URL
-  participant App as FastAPI /events
-
-  Sender->>Nylas: Send email to connected mailbox
-  Nylas-->>Tunnel: POST /events + signature header
-  Tunnel-->>App: Forward to http://127.0.0.1:8000/events
-
-  App->>App: Verify HMAC with WEBHOOK_SECRET
-
-  alt Signature valid
-    App->>App: Parse JSON with Pydantic models
-    App->>App: Store event JSON file
-    App->>App: Add to webhooks array
-    App-->>Nylas: 200 OK
-  else Signature invalid
-    App-->>Nylas: 401 Unauthorized
-  end
-```
-
-### What Will Feel Hard
-
-Config and glue work is often the hardest part of AI apps. Tunnels expire. Secrets must match. Env variables need to reload. Networks can block SSH. This is expected. If you feel lost, keep going. You will learn more here than with a fake dataset that never fails. Stay patient. This is one of the **hardest parts** of course. Once events arrive, the rest of the course will feel much easier.
-
 
 ## API Quickstart
 
@@ -130,7 +89,7 @@ If you're using VS Code or Cursor I recommend to update your `.code-workspace` f
    ```bash
    cp .env.example .env
    ```
-
+s
 2. Update `.env` with your Nylas credentials:
    ```env
    NYLAS_CLIENT_ID=your_client_id
