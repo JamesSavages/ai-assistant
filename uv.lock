@@ -227,6 +227,7 @@ dependencies = [
     { name = "fastapi" },
     { name = "jinja2" },
     { name = "nylas" },
+    { name = "optional" },
     { name = "python-dotenv" },
     { name = "uvicorn" },
 ]
@@ -241,6 +242,7 @@ requires-dist = [
     { name = "fastapi", specifier = ">=0.115.12" },
     { name = "jinja2", specifier = ">=3.1.6" },
     { name = "nylas", specifier = "==6.9.0" },
+    { name = "optional", specifier = ">=0.0.1" },
     { name = "python-dotenv", specifier = ">=1.1.0" },
     { name = "uvicorn", specifier = ">=0.34.2" },
 ]
@@ -468,6 +470,12 @@ dependencies = [
     { name = "typing-extensions" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/8f/24/e9e7d892a3dc29bf4e53ac11a6b12836e6929e32f877affead796a28f3e8/nylas-6.9.0.tar.gz", hash = "sha256:ebc738321d463d68c5f6415360e36d29ef36ed8c8dee9c89b8cf0009d2307320", size = 54684, upload-time = "2025-04-30T17:12:50.475Z" }
+
+[[package]]
+name = "optional"
+version = "0.0.1"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/81/6d/6e5de8c53a36ffb43bebef8dfded5ca782e41010489104e4a90962f080a5/optional-0.0.1.tar.gz", hash = "sha256:2d8532e9f688b936be1ae13f81e57347631017831fc49f358e8f3de975d353eb", size = 1476, upload-time = "2015-03-30T07:14:42.495Z" }
 
 [[package]]
 name = "packaging"

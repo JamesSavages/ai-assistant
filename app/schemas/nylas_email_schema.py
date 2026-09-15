@@ -1,5 +1,5 @@
 from pydantic import BaseModel, Field
-
+from typing import Optional
 
 class EmailObject(BaseModel):
     attachments: list = []
@@ -13,7 +13,7 @@ class EmailObject(BaseModel):
     id: str
     object: str
     reply_to: list = []
-    snippet: str
+    snippet: Optional[str] = None
     starred: bool
     subject: str
     thread_id: str
